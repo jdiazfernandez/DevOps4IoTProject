@@ -1,0 +1,2 @@
+# DevOps4IoTProject
+The DevOps4IoT framework provides an architecture for a centralized monitoring infrastructure that allows developers to obtain fast and continuous feedback from operation, specifically to detect anomalies to better anticipate problems when a production deployment is performed. The instantiation of this architecture is described through a case study that shows the versioned and repeatable configuration of the monitoring infrastructure (Infrastructure as Code) through virtualization and containerization technology.
