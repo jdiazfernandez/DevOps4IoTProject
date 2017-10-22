@@ -1,0 +1,154 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+VAGRANTFILE_API_VERSION = "2"
+
+# All Vagrant configuration is done below. The "2" in Vagrant.configure
+# configures the configuration version (we support older styles for
+# backwards compatibility). Please don't change it unless you know what
+# you're doing.
+Vagrant.configure(2) do |config|  
+
+  config.ssh.insert_key = false
+
+  config.vm.box = "ubuntu/trusty64"
+
+  config.vm.provider :virtualbox do |vb|
+    vb.customize ["modifyvm", :id, "--memory", "4608"]
+    vb.customize ["modifyvm", :id, "--cpus", "2"]
+    vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+  end  
+  
+  config.vm.define :fiware do |op|
+    op.vm.hostname = "fiware.vagrant"
+  end
+
+  config.vm.provision "shell", inline: "cat > /tmp/haproxy.cfg <<EOD
+  global
+      maxconn 256
+
+  defaults
+      mode http
+      timeout connect 5000ms
+      timeout client 50000ms
+      timeout server 50000ms
+
+  frontend http-in
+      bind *:1025
+      default_backend webservers
+
+  backend webservers
+      balance roundrobin
+      # Poor-man's sticky
+      # balance source
+      # JSP SessionID Sticky
+      # appsession JSESSIONID len 52 timeout 3h
+      option httpchk GET /version
+      option forwardfor
+      option http-server-close
+      server orion1 orion1:1026 check
+      server orion2 orion2:1026 check
+
+  listen admin
+      bind *:8080
+      stats enable
+EOD"
+
+config.vm.provision "shell", inline: "cat > /tmp/logstash.conf <<EOD
+  input {
+    beats {
+      port => 5044
+    }
+  }
+
+  filter {
+
+      if [type] == 'filebeat-docker-logs' {
+
+           kv {
+              source => 'message'
+              value_split => '='
+              field_split => '|'
+              target => 'kv'
+            }
+
+            mutate {
+                add_field => { 'source_ip' => '%{[kv][ from]}' }
+                update => { 'message' => '%{[kv][ msg]}' }
+            }
+
+            grok {
+                match => { 'message' => '%{DATA:preMsg}update: <\{ _id.id: \"%{NOTSPACE:uuid}\"%{GREEDYDATA:rest_of_message}'}
+                add_tag => ['uuid']
+            }
+        }
+  }
+
+  output {
+    elasticsearch {
+      hosts => 'elasticsearch'
+      user => 'elastic'
+      password => 'changeme'
+    }
+  }
+EOD"
+
+
+  config.vm.provision "docker" do |d|
+  # https://www.vagrantup.com/docs/provisioning/docker.html
+    
+    d.run "mongodb",
+      image: "mongo:latest",
+      args: "-t -p 27017:27017 --log-driver json-file --log-opt max-size=10m --log-opt max-file=5 -d"
+
+    d.run "orion1",
+      image: "fiware/orion",
+      args: "--link mongodb:mongodb -t -p 1026:1026 --log-driver json-file --log-opt max-size=10m --log-opt max-file=5 -d",
+      cmd: "-dbhost mongodb -logLevel INFO"
+
+    d.run "orion2",
+      image: "fiware/orion",
+      args: "--link mongodb:mongodb -t -p 1027:1026 --log-driver json-file --log-opt max-size=10m --log-opt max-file=5 -d",
+      cmd: "-dbhost mongodb -logLevel INFO"
+
+    d.run "haproxy",
+      image: "haproxy:latest",
+      args: "-t -p 1025:1025 -p 8080:8080 -v /tmp/haproxy.cfg:/etc/haproxy/haproxy.cfg:ro --link orion1:orion1 --link orion2:orion2 --log-driver json-file --log-opt max-size=10m --log-opt max-file=5 -d",
+      cmd: "-f /etc/haproxy/haproxy.cfg"
+
+    d.run "elasticsearch",
+      image: "docker.elastic.co/elasticsearch/elasticsearch:5.4.0",
+      args: "-t -p 9200:9200 -e http.host=0.0.0.0 -e transport.host=127.0.0.1 -e xpack.security.enabled=false --log-driver json-file --log-opt max-size=10m --log-opt max-file=5 -d"
+      # -v /usr/share/elasticsearch/data:/usr/share/elasticsearch/data -d"
+
+    d.run "logstash",
+      image: "docker.elastic.co/logstash/logstash:5.4.0",       
+      args: "-t -p 5044:5044 -p 9600:9600 --link elasticsearch:elasticsearch -v /tmp/logstash.conf:/tmp/logstash.conf --log-driver json-file --log-opt max-size=10m --log-opt max-file=5 -d",
+      #cmd: "-e 'input { beats { port => 5044 } } output { elasticsearch { hosts => elasticsearch:9200, user => elastic, password => changeme} }'"
+      cmd: "-f /tmp/logstash.conf"
+
+    d.run "filebeat",
+      image: "bargenson/filebeat:latest",
+      args: "-t -v /var/run/docker.sock:/tmp/docker.sock --link logstash:logstash -e LOGSTASH_HOST=172.17.0.7 -e LOGSTASH_PORT=5044 -e SHIPPER_NAME=$(hostname) --log-driver json-file --log-opt max-size=10m --log-opt max-file=5 -d"
+    
+    d.run "kibana",
+      image: "docker.elastic.co/kibana/kibana:5.4.0",
+      args: "-t -p 5601:5601 --link elasticsearch:elasticsearch --log-driver json-file --log-opt max-size=10m --log-opt max-file=5 -d"       
+
+    d.run "portainer/portainer:latest",
+      args: "--name portainer -t -p 9000:9000 -v /var/run/docker.sock:/var/run/docker.sock --log-driver json-file --log-opt max-size=10m --log-opt max-file=5 -d"
+               
+  end
+  
+  config.vm.network "forwarded_port", guest: 1025, host: 1025     # haproxy
+  config.vm.network "forwarded_port", guest: 8080, host: 8080     # haproxy stats
+  config.vm.network "forwarded_port", guest: 1026, host: 1026     # orion1
+  config.vm.network "forwarded_port", guest: 1027, host: 1027     # orion2
+  config.vm.network "forwarded_port", guest: 27017, host: 27017   # mongodb
+  config.vm.network "forwarded_port", guest: 9200, host: 9200     # elasticsearch
+  config.vm.network "forwarded_port", guest: 5601, host: 5601     # kibana
+  config.vm.network "forwarded_port", guest: 9600, host: 9600     # logstash monitoring api
+
+  config.vm.network "forwarded_port", guest: 9000, host: 9900     # portainer
+
+end

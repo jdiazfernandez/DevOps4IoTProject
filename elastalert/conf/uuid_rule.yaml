@@ -1,0 +1,61 @@
+# Alert when the rate of events exceeds a threshold
+
+# (Optional)
+# Elasticsearch host
+# es_host: 172.28.1.10
+
+# (Optional)
+# Elasticsearch port
+# es_port: 9200
+
+# (Required)
+# Index to search, wildcard supported
+index: logstash-*
+
+# (OptionaL) Connect with SSL to Elasticsearch
+#use_ssl: True
+
+# (Optional) basic-auth username and password for Elasticsearch
+#es_username: someusername
+#es_password: somepassword
+
+# (Required)
+# Rule name, must be unique
+name: UUID_cardinality_rule
+
+# (Required)
+# Type of alert.
+# the frequency rule type alerts when num_events events occur with timeframe time
+type: cardinality
+
+# (Required, cardinality specific)
+# Count the number of unique values for this field
+cardinality_field: "source_ip"
+
+# (Required, frequency specific)
+# Alert when there more than 1 unique source_ip
+max_cardinality: 1
+
+# For the same uuid
+query_key: uuid
+
+# (Required, frequency specific)
+# The cardinality is defined as the number of unique values for the most recent 4 hours
+timeframe:
+  hours: 24
+
+# (Required)
+# A list of Elasticsearch filters used for find events
+# These filters are joined with AND and nested in a filtered query
+# For more info: http://www.elasticsearch.org/guide/en/elasticsearch/reference/current/query-dsl.html
+filter:
+  - query:
+      wildcard:
+        uuid: "*"
+      
+# (Required)
+# The alert is use when a match is found
+alert:
+- debug
+
+# command: ["/vagrant/conf/script.sh"]
